@@ -10,11 +10,12 @@
   - [uv --version 통해 확인 , 새로운 파워셀 창에서]
   - uv를 설치한 디렉토리에서 uv venv 통해 가상환경 생성.
     - 이 명령은 **.venv**라는 폴더를 생성하고, 시스템에 설치된 기본 파이썬 버전을 사용하여 가상 환경을 만듭니다. 이 과정이 venv 모듈을 사용하는 것보다 훨씬 빠름.
-      ![image.png](image.png)
+      <img width="221" height="25" alt="image" src="https://github.com/user-attachments/assets/940661d0-07d8-48a8-8911-f027465b16d2" />
+
   - 필수 라이브러리 설치.
     - uv pip install pandas psycopg2-binary openpyxl
-      ![image.png](image.png)
-      ![image-1.png](image-1.png)
+       <img width="335" height="192" alt="image" src="https://github.com/user-attachments/assets/aab61300-06d7-4c3c-a599-dc5ab03df788" />
+
   - 가상환경 활성화.
     - .\.venv\Scripts\activate
   - 활성화 확인.
