@@ -116,6 +116,94 @@
 - 첫 번째 호출: 데이터 생성 및 캐시 저장
 - 두 번째 호출: 캐시된 데이터 반환 (카운터 증가 없음)
 
-//커밋 정료 잘 확인하자.
+#### 1.2.2 Nest 서버 실행 및 Redis/캐시 검증 절차
+
+1. **Nest 서버 실행**
+
+   ```bash
+   cd analytic_backend
+   npm run start:dev
+   ```
+
+   - 콘솔에서 `[TEST] CacheManager 주입됨: true`, `Nest application successfully started` 로그 확인
+
+2. **Redis 연결 상태 점검 (`/test/redis-test`)**
+
+   - 브라우저 또는 API 툴에서 `http://localhost:3000/test/redis-test` 호출
+   - 정상 응답 예시:
+     ```json
+     {
+       "status": "success",
+       "message": "Redis 연결 성공",
+       "testResult": "success",
+       "timestamp": "2025-11-15T13:46:23.316Z"
+     }
+     ```
+   - 이 응답이 나오면 Redis 컨테이너(`redis_local_dev`)와 Nest 서버 간 연결이 정상
+
+3. **캐시 동작 확인 (`/test/cache`)**
+   - 동일한 엔드포인트를 연속으로 호출하여 `count` 값이 증가하지 않는지 확인
+   - 첫 호출
+     - 응답: `{"count":1,"timestamp":...}`
+     - 서버 로그: `[TEST] 캐시 키 "test-cache-key" 조회 중... → 캐시 조회 결과: undefined → API 호출됨 → 저장 후 확인`
+   - 두 번째 호출
+     - 응답: `{"count":1,"timestamp":...}` (동일 값 유지)
+     - 서버 로그: `[TEST] 캐시된 데이터 반환`
+   - TTL: 300,000ms (5분) → 5분 내 재호출 시 동일 응답 유지
+
+> 요약: Nest 서버 기동 → `/test/redis-test`로 Redis 연결 확인 → `/test/cache` 반복 호출로 캐시 히트 여부 확인.
+
+---
+
+## 백엔드
+
+### 1. 구조 개편 및 모듈화
+
+- `analytic_backend/src` 구조 정리
+  - `config/`: `app-config.module.ts`, `database.config.ts`, `redis.config.ts` 등 환경 설정 파일 분리
+  - `modules/`: `store`, `analysis`, `spatial`, `test` 등 도메인별 모듈 생성
+  - `shared/`: `dto/pagination.dto.ts`, `interceptors/logging.interceptor.ts` 등 공통 자원 위치
+  - `infra/`: 커스텀 Repository 폴더 준비
+- `app.module.ts` 정리
+  - `AppConfigModule` 도입으로 ConfigModule 설정 일원화
+  - `TypeOrmModule.forRoot(databaseConfig())`와 `CacheModule.registerAsync(redisConfig)` 적용
+  - `StoreModule`, `AnalysisModule`, `SpatialModule`, `TestModule` import
+- `main.ts` 에 전역 로깅 인터셉터 추가
+
+### 2. Store 도메인
+
+- `store.entity.ts` 구성 (SRID=4326 geometry 컬럼 포함)
+- `store.service.ts`: 최근 데이터 조회 API (`findLatest`)
+- `store.controller.ts`: `/stores` 엔드포인트 (limit 기반 조회)
+- TypeORM 모듈 등록 및 StoreModule 구성
+
+### 3. Analysis 도메인
+
+- `analysis.service.ts`: `StoreService` 기반 지표 계산 (`getStoreOpeningSnapshot`)
+- `analysis.controller.ts`: `/analysis/stores/openings` API, Redis 캐시 TTL 적용
+- AnalysisModule에서 StoreModule 의존성 주입
+
+### 4. Spatial 도메인
+
+- `spatial.service.ts`: PostGIS Raw Query (`ST_DWithin`) 실행, 타입 안정성 보강
+- `spatial.controller.ts`: `/spatial/stores-within-radius` API에 `ParseFloatPipe` + 명시적 반환 타입 적용
+- SpatialModule 구성
+
+### 5. 캐시/테스트 모듈
+
+- `test.controller.ts` → `/test/cache`, `/test/redis-test` 등 상태 확인 API 유지
+- TestModule 생성하여 app.module에서 import
+
+### 6. 공통 DTO 및 유틸
+
+- `PaginationQueryDto` 생성, `class-transformer` + `class-validator` 기반 안전한 숫자 변환 구현
+- `logging.interceptor.ts`로 요청당 수행 시간 로깅
+- NPM 의존성에 `class-transformer`, `class-validator` 추가 (설치 필요)
+
+### 7. 기타
+
+- `package.json` dependency 보강 후 `npm install` 필요
+- `tsconfig`, `nest-cli` 기본 구조는 유지
+- 추후 `ValidationPipe` 적용 시 `PaginationQueryDto` 등 활용 예정
 
 #### 1.3 핵심 지표 쿼리 작성(SQL 확정)

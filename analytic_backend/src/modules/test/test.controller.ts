@@ -1,4 +1,4 @@
-// src/test/test.controller.ts
+// src/modules/test/test.controller.ts
 
 import { Controller, Get, Inject } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
