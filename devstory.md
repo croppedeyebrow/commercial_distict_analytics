@@ -207,3 +207,320 @@
 - 추후 `ValidationPipe` 적용 시 `PaginationQueryDto` 등 활용 예정
 
 #### 1.3 핵심 지표 쿼리 작성(SQL 확정)
+
+---
+
+## 2025-11-22
+
+### 1. PostgreSQL 연결 및 환경 변수 설정 문제 해결
+
+#### 1.1 .env 파일 경로 문제 해결
+
+**문제:**
+
+- NestJS 서버 시작 시 PostgreSQL 인증 실패 (`password authentication failed`)
+- `app-config.module.ts`에서 `.env` 파일을 찾지 못함
+
+**원인:**
+
+- `envFilePath`가 `analytic_backend/.env`만 가리키고 있었으나, 실제 `.env` 파일은 프로젝트 루트(`district_analytics/.env`)에 위치
+
+**해결:**
+
+- `app-config.module.ts` 수정: 프로젝트 루트와 `analytic_backend` 루트 모두에서 `.env` 파일을 찾도록 경로 배열 설정
+  ```typescript
+  envFilePath: [
+    join(__dirname, '../../../.env'), // 프로젝트 루트
+    join(__dirname, '../../.env'), // analytic_backend 루트 (백업)
+  ],
+  ```
+
+**결과:**
+
+- PostgreSQL 연결 정상 작동
+- 환경 변수 로드 성공
+
+### 2. TypeORM 스키마 동기화 문제 해결
+
+#### 2.1 스키마 동기화 실패 원인 분석
+
+**문제:**
+
+- 서버 시작 시 TypeORM이 스키마 동기화를 시도하지만 실패
+- 에러: `"openDate" 열(해당 릴레이션 "store")의 자료 가운데 null 값이 있습니다`
+- 이후 `"location" 열(해당 릴레이션 "store")의 자료 가운데 null 값이 있습니다` 에러도 발생
+
+**원인:**
+
+- 기존 데이터베이스에 필수 컬럼(`sector`, `openDate`, `location`)이 `null`인 레코드 존재
+- `StoreEntity`에서 이 컬럼들이 `nullable: false`로 정의되어 있어 스키마 동기화 시 제약 조건 추가 실패
+
+#### 2.2 해결 전략 수립
+
+**단계별 접근:**
+
+1. **임시 조치**: `synchronize: false`로 설정하여 스키마 동기화 비활성화
+2. **데이터 정리 스크립트 작성**: `fix-open-date-nulls.sql` 생성
+   - 필수 컬럼(`sector`, `openDate`, `location`) 중 하나라도 `null`인 레코드 삭제
+3. **지오코딩 작업**: `geocode_script.py`로 `address`가 있는 레코드의 `location` 컬럼 채우기
+4. **최종 활성화**: 데이터 정리 완료 후 `synchronize: true`로 변경
+
+**스크립트 위치:**
+
+- `analytic_backend/scripts/fix-open-date-nulls.sql`
+
+**database.config.ts 설정:**
+
+```typescript
+// synchronize 설정 전략:
+// 1. 현재 false: 백엔드 설계 안정화 단계 (스키마 동기화 비활성화)
+// 2. geocode_script.py 실행: address가 있는 모든 레코드의 location 컬럼을 채움
+// 3. SQL 스크립트 실행: 필수 컬럼(sector, openDate, location)이 null인 레코드 삭제
+// 4. true로 변경: 데이터 정리 완료 후 스키마 동기화 활성화
+synchronize: false, // 지오코딩 및 데이터 정리 완료 후 true로 변경
+```
+
+### 3. 지오코딩 스크립트 수정
+
+#### 3.1 geocode_script.py 업데이트
+
+**변경 사항:**
+
+- `location_wkt` 컬럼 업데이트 제거 (이미 삭제된 컬럼)
+- `location` 컬럼만 PostGIS geometry 형식으로 업데이트
+
+**작동 방식:**
+
+- `address`가 있고 `location`이 `null`인 레코드를 조회
+- 카카오 API로 주소를 위경도로 변환
+- PostGIS `ST_SetSRID(ST_GeomFromText(:wkt), 4326)` 함수로 `location` 컬럼 업데이트
+
+**일일 할당량:**
+
+- 100,000건 처리 제한 (카카오 API 무료 할당량)
+
+### 4. API 검증 문제 해결
+
+#### 4.1 SurvivalRequestDto ValidationPipe 오류
+
+**문제:**
+
+- `/analysis/survival?sector=C10` API 호출 시 400 에러 발생
+- 에러 메시지: `"property sector should not exist"`
+
+**원인:**
+
+- `main.ts`의 `ValidationPipe` 설정에서 `forbidNonWhitelisted: true` 활성화
+- `SurvivalRequestDto`에 `@ApiProperty`만 있고 `class-validator` 데코레이터가 없어 ValidationPipe가 속성을 거부
+
+**해결:**
+
+- `SurvivalRequestDto`에 `class-validator` 데코레이터 추가:
+  ```typescript
+  @IsOptional() // 선택값임을 명시
+  @IsString() // 문자열 타입 검증
+  sector?: string;
+  ```
+- ESLint 오류 해결을 위해 해당 라인에 예외 주석 추가
+
+**결과:**
+
+- API 정상 작동
+- ValidationPipe가 `sector` 속성을 허용
+
+### 5. 개발 워크플로우 정리
+
+**현재 단계:**
+
+1. ✅ 백엔드 설계 안정화 (`synchronize: false`)
+2. ⏳ 지오코딩 작업 (`geocode_script.py` 실행 예정)
+3. ⏳ 데이터 정리 (`fix-open-date-nulls.sql` 실행 예정)
+4. ⏳ 스키마 동기화 활성화 (`synchronize: true`)
+
+**다음 단계:**
+
+- `geocode_script.py` 실행하여 `address`가 있는 레코드의 `location` 컬럼 채우기
+- SQL 스크립트 실행하여 필수 컬럼이 `null`인 레코드 삭제
+- 데이터 정리 완료 후 `synchronize: true`로 변경하여 스키마 동기화 활성화
+
+### 6. StoreModule 기능 확장
+
+#### 6.1 StoreService 메서드 추가
+
+**추가된 메서드:**
+
+- `findAllBySector(sector: string)`: 특정 업종의 모든 점포 조회
+- `findClosedStores(sector?: string)`: 폐업한 점포 목록 조회 (업종 필터링 지원)
+
+**구현 내용:**
+
+- `findClosedStores`: TypeORM의 `Not(IsNull())` 조건을 사용하여 `closeDate`가 NULL이 아닌 레코드만 조회
+- 업종 필터링 지원으로 특정 업종의 폐업 점포만 조회 가능
+
+#### 6.2 StoreController 엔드포인트 추가
+
+**추가된 엔드포인트:**
+
+- `GET /stores/closed`: 폐업한 점포 목록 조회
+  - 쿼리 파라미터: `sector` (선택값)
+  - 사용 예시: `GET /stores/closed?sector=C10`
+
+**기존 엔드포인트 개선:**
+
+- `GET /stores`: 페이징 파라미터(`page`, `limit`) 추가, `ParseIntPipe`와 `DefaultValuePipe` 사용
+- 업종 필터링 지원: `GET /stores?sector=C10`
+
+### 7. AnalysisModule 핵심 기능 구현
+
+#### 7.1 AnalysisService 비즈니스 로직 구현
+
+**구현된 메서드:**
+
+1. **`calculateSurvival(sector?: string)`**: 평균 생존 기간 계산
+
+   - 폐업한 점포들의 개업일과 폐업일을 비교하여 생존 일수 계산
+   - 업종별로 그룹화하여 평균 생존 일수 산출
+   - 반환값: `{ sector: string, avgDurationDays: number, sampleSize: number }[]`
+
+2. **`getCompetition(lat, lng, radiusMeters, sector)`**: 경쟁 강도 계산
+   - 특정 위치와 반경 내 동일 업종 점포 개수 계산
+   - `SpatialService.countStoresInRadius`를 사용하여 PostGIS 레벨에서 고성능 처리
+   - 반환값: `{ totalCount: number, sector: string }`
+
+#### 7.2 AnalysisController API 엔드포인트
+
+**구현된 엔드포인트:**
+
+1. **`GET /analysis/stores/openings`**: 점포 개업 현황 스냅샷
+
+   - 최근 개업한 점포들의 통계 정보 제공
+   - Redis 캐시 적용 (TTL: 300초)
+   - 반환값: `{ sampleSize, latestOpenedAt, sectors }`
+
+2. **`GET /analysis/survival`**: 평균 생존 기간 분석
+
+   - 쿼리 파라미터: `sector` (선택값)
+   - Redis 캐시 적용 (TTL: 3600초 = 1시간)
+   - 반환값: 업종별 평균 생존 일수 배열
+
+3. **`GET /analysis/competition`**: 경쟁 강도 공간 분석
+   - 쿼리 파라미터: `lat`, `lon`, `radiusMeters`, `sector` (모두 필수)
+   - `ParseFloatPipe`로 좌표 및 반경 값 자동 변환 및 검증
+   - 좌표 범위 검증: 위도(-90~90), 경도(-180~180), 반경(1~10000m)
+   - 캐싱 미적용 (실시간 좌표 기반 쿼리)
+
+### 8. DTO 및 검증 시스템 구축
+
+#### 8.1 Analysis DTO 작성
+
+**파일:** `shared/dto/analysis.dto.ts`
+
+**구현된 DTO:**
+
+- `SurvivalRequestDto`: 생존 기간 분석 요청 (sector?: string)
+- `SurvivalResponseDto`: 생존 기간 분석 응답 (sector, avgDurationDays, sampleSize)
+- `CompetitionRequestDto`: 경쟁 강도 분석 요청 (lat, lon, radiusMeters, sector)
+- `CompetitionResponseDto`: 경쟁 강도 분석 응답 (totalCount, sector)
+
+**특징:**
+
+- `@ApiProperty` 데코레이터로 Swagger 문서화
+- `class-validator` 데코레이터(`@IsOptional`, `@IsString`)로 ValidationPipe 통합
+
+#### 8.2 공통 DTO 작성
+
+**파일:** `shared/dto/error-response.dto.ts`
+
+- 표준 에러 응답 형식 정의
+- `statusCode`, `message`, `timestamp`, `path` 필드 포함
+
+**파일:** `shared/dto/pagination.dto.ts`
+
+- 페이징 쿼리 파라미터 타입 정의
+- `ParseIntPipe`와 `DefaultValuePipe`를 컨트롤러에서 직접 사용하는 방식으로 변경
+
+### 9. 에러 처리 및 검증 강화
+
+#### 9.1 전역 예외 필터 구현
+
+**파일:** `shared/filters/http-exception.filter.ts`
+
+**기능:**
+
+- 모든 HTTP 예외를 캐치하여 표준화된 JSON 응답 형식으로 변환
+- `ErrorResponseDto` 형식으로 일관된 에러 응답 제공
+- 개발 환경에서 상세한 에러 로그 출력
+
+#### 9.2 커스텀 검증 파이프
+
+**파일:** `shared/pipes/competition-validation.pipe.ts`
+
+**기능:**
+
+- 경쟁 강도 분석 요청의 좌표 및 반경 값 검증
+- 위도(-90~90), 경도(-180~180), 반경(1~10000m) 범위 검증
+- 업종 코드 필수값 검증
+
+#### 9.3 main.ts 전역 설정
+
+**추가된 설정:**
+
+- `ValidationPipe` 전역 적용
+  - `transform: true`: 쿼리 파라미터를 DTO로 자동 변환
+  - `whitelist: true`: DTO에 정의되지 않은 속성 제거
+  - `forbidNonWhitelisted: true`: 정의되지 않은 속성이 있으면 에러 반환
+- `HttpExceptionFilter` 전역 적용
+- `LoggingInterceptor` 전역 적용
+
+### 10. Swagger API 문서화
+
+#### 10.1 Swagger 설정
+
+**main.ts에 추가:**
+
+- `DocumentBuilder`로 API 문서 메타데이터 설정
+- `SwaggerModule.setup('api', app, document)`로 `/api` 경로에 Swagger UI 배치
+
+**태그 설정:**
+
+- `stores`: 점포 데이터 조회
+- `analysis`: 상권 분석 지표
+- `spatial`: 공간 분석
+- `test`: 시스템 테스트
+
+#### 10.2 컨트롤러 문서화
+
+**적용된 데코레이터:**
+
+- `@ApiTags`: 컨트롤러 그룹화
+- `@ApiOperation`: API 설명 및 요약
+- `@ApiQuery`: 쿼리 파라미터 설명
+- `@ApiResponse`: 응답 형식 및 예시 정의
+
+**문서화된 엔드포인트:**
+
+- `/analysis/stores/openings`
+- `/analysis/survival`
+- `/analysis/competition`
+- `/stores`
+- `/stores/closed`
+
+### 11. 코드 주석 및 문서화
+
+**추가된 주석:**
+
+- 모든 새로 작성한 클래스, 메서드, 속성에 JSDoc 스타일 주석 추가
+- 기능 설명, 파라미터 설명, 반환값 설명, 사용 예시 포함
+- 비즈니스 로직의 의도와 동작 방식을 명확히 설명
+
+**주석이 추가된 파일:**
+
+- `store.entity.ts`
+- `store.service.ts`
+- `store.controller.ts`
+- `analysis.service.ts`
+- `analysis.controller.ts`
+- `spatial.service.ts`
+- `spatial.controller.ts`
+- 모든 DTO 파일
+- 필터 및 파이프 파일
