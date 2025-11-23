@@ -260,3 +260,177 @@ MVP의 핵심 비즈니스 지표를 계산하고 사용자에게 제공하는 A
 | **F-401** | **평균 생존 기간 API**  | 업종별(`sector`) 폐업 데이터를 기반으로 **평균 생존 일수**를 계산하여 반환합니다.                      | `GET /analysis/survival`    |
 | **F-402** | **경쟁 강도 API**       | 요청 좌표(`lat/lon`)와 반경(`radius`)에 대해 **F-301** 기능을 호출하여 동종 업종 점포 수를 반환합니다. | `GET /analysis/competition` |
 | **F-403** | **생존 기간 결과 캐싱** | **F-401** API에 `@UseInterceptors(CacheInterceptor)`를 적용하여 Redis를 통한 응답 캐싱을 구현합니다.   | N/A (성능 기능)             |
+
+## 2025-11-23 nest 백엔드 설계 변경.
+
+### 하이브리드 아키텍처 도입: Python 사전 계산 + Nest.js 서빙
+
+#### 배경 및 목적
+
+기존에는 Nest.js에서 모든 분석 로직을 실행하여 매 요청마다 DB 집계 쿼리를 수행했습니다. 이는 다음과 같은 문제점이 있었습니다:
+
+- **성능 이슈**: 복잡한 통계 계산을 매 요청마다 수행하여 응답 시간이 느림 (200-500ms)
+- **DB 부하**: 집계 쿼리가 빈번하게 실행되어 데이터베이스 부하 증가
+- **유지보수성**: SQL과 TypeScript 로직이 혼재하여 복잡한 분석 로직 구현이 어려움
+
+**해결 방안**: Python의 데이터 분석 라이브러리(pandas, numpy 등)를 활용하여 복잡한 분석을 사전에 계산하고, 그 결과를 별도 테이블에 저장한 후, Nest.js는 단순 조회만 수행하는 **하이브리드 아키텍처**로 전환합니다.
+
+#### 아키텍처 변경 개요
+
+```
+┌─────────────────┐
+│  Python ETL     │  ← pandas로 복잡한 분석 계산 (배치 작업)
+│  (배치 작업)     │
+└────────┬────────┘
+         │ INSERT INTO analysis_results
+         ▼
+┌─────────────────┐
+│  PostgreSQL     │
+│  - store        │  ← 원본 데이터
+│  - survival_    │  ← 사전 계산된 분석 결과
+│    analysis     │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Nest.js API    │
+│  - /analysis/   │  ← 사전 계산 결과 조회 (빠름)
+│    survival     │
+│  - /analysis/   │  ← 실시간 PostGIS 쿼리 (동적)
+│    competition  │
+└─────────────────┘
+```
+
+#### 변경 대상 API 및 전략
+
+| API Endpoint                    | 현재 방식           | 변경 후 방식                             | 변경 이유                                          |
+| :------------------------------ | :------------------ | :--------------------------------------- | :------------------------------------------------- |
+| `GET /analysis/survival`        | Nest.js 메모리 계산 | Python 사전 계산 → 테이블 조회           | 복잡한 통계 계산을 Python으로 처리, 응답 속도 향상 |
+| `GET /analysis/stores/openings` | 실시간 집계         | Python 일별/주별 집계 → 테이블 조회      | 자주 변하지 않는 데이터이므로 사전 계산 효율적     |
+| `GET /analysis/competition`     | PostGIS 실시간 쿼리 | **변경 없음** (PostGIS 실시간 쿼리 유지) | 동적 파라미터(lat, lon, radius)로 사전 계산 불가   |
+
+#### 데이터베이스 스키마 변경
+
+##### 1. `survival_analysis` 테이블 추가
+
+사전 계산된 생존 기간 분석 결과를 저장하는 테이블입니다.
+
+**테이블 구조**:
+
+- `sector` (VARCHAR(10), PRIMARY KEY): 업종 코드
+- `avg_duration_days` (DECIMAL(10, 2), NOT NULL): 평균 생존 일수
+- `sample_size` (INTEGER, NOT NULL): 샘플 크기
+- `calculated_at` (TIMESTAMP): 계산 시각
+- `updated_at` (TIMESTAMP): 업데이트 시각
+- 인덱스: `sector` 컬럼에 인덱스 생성
+
+**엔티티 정의** (`analytic_backend/src/modules/analysis/entities/survival-analysis.entity.ts`):
+
+- TypeORM 엔티티 클래스로 정의
+- `@Entity("survival_analysis")` 데코레이터 사용
+- 필드: `sector` (PrimaryColumn), `avgDurationDays` (Column), `sampleSize` (Column), `calculatedAt` (CreateDateColumn), `updatedAt` (UpdateDateColumn)
+- 구체적인 코드는 개발 시 구현
+
+##### 2. `store_opening_snapshot` 테이블 추가 (선택사항)
+
+점포 개업 현황 스냅샷을 저장하는 테이블입니다.
+
+**테이블 구조**:
+
+- `id` (SERIAL, PRIMARY KEY): 고유 식별자
+- `snapshot_date` (DATE, NOT NULL): 스냅샷 날짜
+- `sample_size` (INTEGER, NOT NULL): 샘플 크기
+- `latest_opened_at` (DATE, NOT NULL): 최신 개업일
+- `sectors` (TEXT[], NOT NULL): 업종 목록 배열
+- `created_at` (TIMESTAMP): 생성 시각
+- 인덱스: `snapshot_date` 컬럼에 인덱스 생성
+
+#### AnalysisService 변경 사항
+
+##### 변경 전: `calculateSurvival` 메서드
+
+- 현재 방식: 폐업 점포를 조회한 후 메모리에서 계산
+- `StoreService.findClosedStores(sector)` 호출하여 데이터 조회
+- 메모리에서 업종별 평균 생존 일수 계산
+
+##### 변경 후: 사전 계산된 결과 조회
+
+- Python으로 사전 계산된 결과를 `survival_analysis` 테이블에서 조회
+- `sector` 파라미터가 있으면 해당 업종만, 없으면 전체 업종 조회
+- `DataSource.query()`를 사용하여 단순 SELECT 쿼리 실행
+- 반환값을 `SurvivalResponseDto[]` 형식으로 변환
+- 구체적인 코드는 개발 시 구현
+
+#### 새로운 모듈/서비스 추가
+
+##### `AnalysisResultService` (선택사항)
+
+사전 계산된 분석 결과를 관리하는 서비스를 추가할 수 있습니다.
+
+**위치**: `analytic_backend/src/modules/analysis/analysis-result.service.ts`
+
+**주요 기능**:
+
+- `@Injectable()` 데코레이터로 서비스 클래스 정의
+- `SurvivalAnalysisEntity`에 대한 TypeORM Repository 주입
+- `getSurvivalAnalysis(sector?: string)` 메서드: sector 파라미터에 따라 필터링 또는 전체 조회
+- TypeORM Repository의 `find()` 메서드를 사용한 조회
+- 구체적인 코드는 개발 시 구현
+
+#### 캐싱 전략 변경
+
+##### 변경 전
+
+- `GET /analysis/survival`: Redis 캐시 TTL 3600초 (1시간)
+- 매 요청마다 계산 로직 실행 후 캐시 저장
+
+##### 변경 후
+
+- `GET /analysis/survival`: **캐싱 제거 또는 TTL 단축** (사전 계산 결과 조회가 이미 빠름)
+- Python 배치 작업이 주기적으로 `survival_analysis` 테이블을 업데이트하므로, Nest.js는 항상 최신 결과를 조회
+
+#### 성능 개선 예상 효과
+
+| 항목                         | 변경 전               | 변경 후                           | 개선율              |
+| :--------------------------- | :-------------------- | :-------------------------------- | :------------------ |
+| **생존 기간 분석 응답 시간** | 200-500ms             | 10-50ms                           | **80-90% 감소**     |
+| **DB 부하**                  | 매 요청마다 집계 쿼리 | 배치 작업 시에만 부하             | **대폭 감소**       |
+| **코드 복잡도**              | SQL + TypeScript 혼재 | Python(분석) + Nest.js(서빙) 분리 | **유지보수성 향상** |
+
+#### 구현 단계
+
+1. **1단계: 데이터베이스 스키마 추가**
+
+   - `survival_analysis` 테이블 생성
+   - `store_opening_snapshot` 테이블 생성 (선택사항)
+
+2. **2단계: Python 분석 스크립트 작성**
+
+   - `python_data_processing/survival_analysis.py` 작성
+   - pandas를 활용한 생존 기간 계산 로직 구현
+
+3. **3단계: Nest.js 서비스 수정**
+
+   - `AnalysisService.calculateSurvival` 메서드 수정
+   - 사전 계산 결과 테이블 조회로 변경
+
+4. **4단계: 배치 작업 스케줄링**
+
+   - Python 스크립트를 주기적으로 실행하는 스케줄러 설정 (cron, Airflow 등)
+
+5. **5단계: 테스트 및 검증**
+   - API 응답 시간 측정
+   - 데이터 정확성 검증
+
+#### 주의사항
+
+- **경쟁 강도 분석 (`/analysis/competition`)은 변경하지 않음**: 동적 파라미터(lat, lon, radiusMeters)로 인해 사전 계산이 불가능하므로 PostGIS 실시간 쿼리를 유지합니다.
+- **데이터 동기화**: Python 배치 작업이 실행되기 전까지는 이전 분석 결과가 조회됩니다. 배치 작업 주기를 적절히 설정해야 합니다.
+- **에러 처리**: `survival_analysis` 테이블에 데이터가 없는 경우를 대비한 fallback 로직을 구현해야 합니다.
+
+#### 관련 파일 변경 목록
+
+- `analytic_backend/src/modules/analysis/analysis.service.ts`: `calculateSurvival` 메서드 수정
+- `analytic_backend/src/modules/analysis/entities/survival-analysis.entity.ts`: 새 엔티티 추가 (선택사항)
+- `python_data_processing/survival_analysis.py`: Python 분석 스크립트 추가
+- `analytic_backend/scripts/create-analysis-tables.sql`: 분석 결과 테이블 생성 스크립트 추가

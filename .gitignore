@@ -62,3 +62,4 @@ Thumbs.db
 .coverage
 htmlcov/
 
+.DEVELOPMENT_PLAN.md
