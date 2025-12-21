@@ -115,6 +115,78 @@ export class AnalysisController {
   }
 
   /**
+   * 생존 기간 분포 분석 API
+   *
+   * GET /analysis/survival/distribution
+   *
+   * 현재 영업 중인 점포들의 개업일부터 현재까지의 기간을 여러 단계로 분류하여
+   * 생존 패턴을 분석합니다. 폐업 데이터가 없어도 현재 영업 중인 점포들의
+   * 생존 기간 분포를 통해 상권의 생존 패턴을 파악할 수 있습니다.
+   *
+   * @param sector 업종 코드 (선택값, 없으면 전체 업종 분석)
+   * @returns 업종별 생존 기간 단계별 분포
+   *
+   * 단계 분류:
+   * - 0-1년: 신규 개업
+   * - 1-3년: 안정화 단계
+   * - 3-5년: 성장 단계
+   * - 5-10년: 성숙 단계
+   * - 10년 이상: 장기 영업
+   *
+   * 사용 예시:
+   * - GET /analysis/survival/distribution (전체 업종)
+   * - GET /analysis/survival/distribution?sector=C10 (카페만)
+   */
+  @Get('survival/distribution')
+  @ApiOperation({
+    summary: '생존 기간 분포 분석',
+    description:
+      '현재 영업 중인 점포들의 개업일부터 현재까지의 기간을 여러 단계로 분류하여 생존 패턴을 분석합니다. 폐업 데이터가 없어도 현재 영업 중인 점포들의 생존 기간 분포를 통해 상권의 생존 패턴을 파악할 수 있습니다.',
+  })
+  @ApiQuery({
+    name: 'sector',
+    required: false,
+    type: String,
+    description:
+      '업종 코드 (예: C10=카페, I20=음식점). 지정하지 않으면 전체 업종 분석',
+  })
+  @ApiResponse({
+    status: 200,
+    description: '업종별 생존 기간 단계별 분포',
+    schema: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          sector: { type: 'string', description: '업종 코드' },
+          totalCount: { type: 'number', description: '전체 점포 수' },
+          stages: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                stage: { type: 'string', description: '단계 이름' },
+                range: { type: 'string', description: '기간 범위' },
+                count: { type: 'number', description: '점포 수' },
+                percentage: {
+                  type: 'number',
+                  description: '비율 (%)',
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  })
+  @UseInterceptors(CacheInterceptor)
+  @CacheKey('analysis-survival-distribution')
+  @CacheTTL(3600) // 1시간 캐시
+  async getSurvivalDistribution(@Query() dto: SurvivalRequestDto) {
+    return this.analysisService.calculateSurvivalDistribution(dto.sector);
+  }
+
+  /**
    * 경쟁 강도 분석 API
    *
    * GET /analysis/competition

@@ -57,23 +57,57 @@ export class AnalysisService {
       sampleSize: number;
     }>
   > {
+    console.log('[AnalysisService] calculateSurvival 호출:', { sector });
+
     // 1. 폐업한 점포 데이터 조회
     const closedStores = await this.storeService.findClosedStores(sector);
+    console.log('[AnalysisService] 조회된 폐업 점포 수:', closedStores.length);
 
     if (closedStores.length === 0) {
+      console.log('[AnalysisService] 폐업 점포가 없어 빈 배열 반환');
       return []; // 데이터가 없으면 빈 배열 반환
     }
 
     // 2. 업종별로 생존 일수를 그룹화
     const sectorGroups = new Map<string, number[]>();
+    let skippedCount = 0;
+    let negativeDurationCount = 0;
 
     for (const store of closedStores) {
       // 날짜 정보가 없으면 건너뛰기
-      if (!store.closeDate || !store.openDate) continue;
+      if (!store.closeDate || !store.openDate) {
+        skippedCount++;
+        continue;
+      }
+
+      // 날짜를 Date 객체로 변환 (문자열인 경우 처리)
+      const closeDate =
+        store.closeDate instanceof Date
+          ? store.closeDate
+          : new Date(store.closeDate);
+      const openDate =
+        store.openDate instanceof Date
+          ? store.openDate
+          : new Date(store.openDate);
+
+      // 유효하지 않은 날짜 필터링
+      if (isNaN(closeDate.getTime()) || isNaN(openDate.getTime())) {
+        skippedCount++;
+        continue;
+      }
 
       // 생존 일수 계산 (밀리초 → 일수 변환)
-      const durationMs = store.closeDate.getTime() - store.openDate.getTime();
+      const durationMs = closeDate.getTime() - openDate.getTime();
       const durationDays = Math.floor(durationMs / (1000 * 60 * 60 * 24));
+
+      // 음수 값 필터링 (데이터 오류 방지)
+      if (durationDays < 0) {
+        negativeDurationCount++;
+        console.warn(
+          `[AnalysisService] 음수 생존 일수 발견: storeId=${store.id}, openDate=${openDate.toISOString()}, closeDate=${closeDate.toISOString()}, durationDays=${durationDays}`,
+        );
+        continue;
+      }
 
       // 업종별로 생존 일수 배열에 추가
       if (!sectorGroups.has(store.sector)) {
@@ -81,6 +115,16 @@ export class AnalysisService {
       }
       sectorGroups.get(store.sector)?.push(durationDays);
     }
+
+    console.log(
+      '[AnalysisService] 날짜 정보 없음으로 건너뛴 점포:',
+      skippedCount,
+    );
+    console.log(
+      '[AnalysisService] 음수 생존 일수로 건너뛴 점포:',
+      negativeDurationCount,
+    );
+    console.log('[AnalysisService] 업종별 그룹 수:', sectorGroups.size);
 
     // 3. 업종별 평균 생존 일수 계산
     const results: Array<{
@@ -99,8 +143,13 @@ export class AnalysisService {
         avgDurationDays: Math.round(avgDuration * 100) / 100, // 소수점 2자리 반올림
         sampleSize: durations.length, // 해당 업종의 폐업 점포 개수
       });
+
+      console.log(
+        `[AnalysisService] ${sectorName}: 평균 ${Math.round(avgDuration * 100) / 100}일, 샘플 크기 ${durations.length}`,
+      );
     }
 
+    console.log('[AnalysisService] 최종 결과:', results);
     return results;
   }
 
@@ -154,6 +203,180 @@ export class AnalysisService {
       totalCount,
       sector,
     };
+  }
+
+  /**
+   * 생존 기간 분포 분석 (현재 영업 중인 점포 기준)
+   *
+   * 폐업 데이터가 없는 경우, 현재 영업 중인 점포들의 개업일부터 현재까지의 기간을
+   * 여러 단계로 분류하여 생존 패턴을 분석합니다.
+   *
+   * @param sector 업종 코드 (선택값, 지정하면 해당 업종만 분석)
+   * @returns 업종별 생존 기간 단계별 분포
+   *
+   * 단계 분류:
+   * - 0-1년: 신규 개업 (0 ~ 365일)
+   * - 1-3년: 안정화 단계 (366 ~ 1095일)
+   * - 3-5년: 성장 단계 (1096 ~ 1825일)
+   * - 5-10년: 성숙 단계 (1826 ~ 3650일)
+   * - 10년 이상: 장기 영업 (3651일 이상)
+   */
+  async calculateSurvivalDistribution(sector?: string): Promise<
+    Array<{
+      sector: string;
+      stages: Array<{
+        stage: string;
+        range: string;
+        count: number;
+        percentage: number;
+      }>;
+      totalCount: number;
+    }>
+  > {
+    console.log('[AnalysisService] calculateSurvivalDistribution 호출:', {
+      sector,
+    });
+
+    // 1. 현재 영업 중인 점포 조회 (closeDate가 NULL인 점포)
+    const openStores = await this.storeService.findOpenStores(sector);
+    console.log('[AnalysisService] 조회된 영업 중 점포 수:', openStores.length);
+
+    if (openStores.length === 0) {
+      console.log(
+        '[AnalysisService] 영업 중인 점포가 없어 빈 배열 반환 (sector:',
+        sector,
+        ')',
+      );
+      return [];
+    }
+
+    // openDate가 있는 점포 수 확인
+    const storesWithOpenDate = openStores.filter((s) => s.openDate);
+    console.log(
+      '[AnalysisService] openDate가 있는 점포 수:',
+      storesWithOpenDate.length,
+      '/',
+      openStores.length,
+    );
+
+    // 2. 현재 날짜 기준
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // 3. 생존 기간 단계 정의
+    const stages = [
+      { name: '0-1년', minDays: 0, maxDays: 365, label: '신규 개업' },
+      { name: '1-3년', minDays: 366, maxDays: 1095, label: '안정화 단계' },
+      { name: '3-5년', minDays: 1096, maxDays: 1825, label: '성장 단계' },
+      { name: '5-10년', minDays: 1826, maxDays: 3650, label: '성숙 단계' },
+      {
+        name: '10년 이상',
+        minDays: 3651,
+        maxDays: Number.MAX_SAFE_INTEGER,
+        label: '장기 영업',
+      },
+    ];
+
+    // 4. 업종별로 그룹화
+    const sectorGroups = new Map<
+      string,
+      Array<{ storeId: number; survivalDays: number }>
+    >();
+
+    for (const store of openStores) {
+      if (!store.openDate || !store.sector) continue;
+
+      // 개업일을 Date 객체로 변환 (문자열인 경우 처리)
+      const openDate =
+        store.openDate instanceof Date
+          ? new Date(store.openDate)
+          : new Date(store.openDate);
+      openDate.setHours(0, 0, 0, 0);
+
+      // 유효하지 않은 날짜 필터링
+      if (isNaN(openDate.getTime())) {
+        continue;
+      }
+
+      const durationMs = today.getTime() - openDate.getTime();
+      const durationDays = Math.floor(durationMs / (1000 * 60 * 60 * 24));
+
+      // 음수 값 필터링 (미래 날짜 오류 방지)
+      if (durationDays < 0) {
+        console.warn(
+          `[AnalysisService] 음수 생존 일수 발견: storeId=${store.id}, openDate=${openDate.toISOString()}`,
+        );
+        continue;
+      }
+
+      if (!sectorGroups.has(store.sector)) {
+        sectorGroups.set(store.sector, []);
+      }
+      sectorGroups.get(store.sector)?.push({
+        storeId: store.id,
+        survivalDays: durationDays,
+      });
+    }
+
+    // 5. 업종별로 단계별 분포 계산
+    const results: Array<{
+      sector: string;
+      stages: Array<{
+        stage: string;
+        range: string;
+        count: number;
+        percentage: number;
+      }>;
+      totalCount: number;
+    }> = [];
+
+    for (const [sectorName, stores] of sectorGroups.entries()) {
+      const totalCount = stores.length;
+      const stageCounts = new Map<string, number>();
+
+      // 각 점포를 단계에 분류
+      for (const store of stores) {
+        for (const stage of stages) {
+          if (
+            store.survivalDays >= stage.minDays &&
+            store.survivalDays <= stage.maxDays
+          ) {
+            const count = stageCounts.get(stage.name) ?? 0;
+            stageCounts.set(stage.name, count + 1);
+            break;
+          }
+        }
+      }
+
+      // 단계별 통계 생성
+      const stageStats = stages.map((stage) => {
+        const count = stageCounts.get(stage.name) ?? 0;
+        const percentage =
+          totalCount > 0
+            ? Math.round((count / totalCount) * 100 * 100) / 100
+            : 0;
+
+        return {
+          stage: stage.label,
+          range: stage.name,
+          count,
+          percentage,
+        };
+      });
+
+      results.push({
+        sector: sectorName,
+        stages: stageStats,
+        totalCount,
+      });
+
+      console.log(
+        `[AnalysisService] ${sectorName}: 총 ${totalCount}개 점포, 단계별 분포 계산 완료`,
+      );
+    }
+
+    console.log('[AnalysisService] 생존 기간 분포 분석 완료');
+    return results;
   }
 
   /**

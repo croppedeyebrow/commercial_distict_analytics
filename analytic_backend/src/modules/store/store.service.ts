@@ -58,6 +58,8 @@ export class StoreService {
    * @returns 폐업한 점포 목록 (폐업일 내림차순)
    */
   async findClosedStores(sector?: string): Promise<StoreEntity[]> {
+    console.log('[StoreService] findClosedStores 호출:', { sector });
+
     // closeDate가 NULL이 아닌 조건 생성
     const where: { closeDate: any; sector?: string } = {
       closeDate: Not(IsNull()), // "closeDate IS NOT NULL" 조건
@@ -68,10 +70,80 @@ export class StoreService {
       where.sector = sector;
     }
 
-    return this.storeRepository.find({
+    const result = await this.storeRepository.find({
       where,
       order: { closeDate: 'DESC' }, // 폐업일 내림차순
     });
+
+    console.log('[StoreService] 조회된 폐업 점포 수:', result.length);
+    if (result.length > 0) {
+      console.log('[StoreService] 샘플 점포:', {
+        id: result[0].id,
+        sector: result[0].sector,
+        openDate: result[0].openDate,
+        closeDate: result[0].closeDate,
+      });
+    }
+
+    return result;
+  }
+
+  /**
+   * 현재 영업 중인 점포 목록 조회
+   *
+   * closeDate가 NULL인 점포만 조회합니다.
+   * 생존 기간 분포 분석에 사용됩니다.
+   *
+   * @param sector 업종 코드 (선택값, 지정하면 해당 업종만 필터링)
+   * @returns 현재 영업 중인 점포 목록 (개업일 오름차순)
+   */
+  async findOpenStores(sector?: string): Promise<StoreEntity[]> {
+    console.log('[StoreService] findOpenStores 호출:', { sector });
+
+    // closeDate가 NULL인 조건 생성
+    const where: { closeDate: any; sector?: string } = {
+      closeDate: IsNull(), // "closeDate IS NULL" 조건
+    };
+
+    // 업종 필터가 있으면 추가
+    if (sector) {
+      where.sector = sector;
+    }
+
+    const result = await this.storeRepository.find({
+      where,
+      order: { openDate: 'ASC' }, // 개업일 오름차순
+    });
+
+    console.log('[StoreService] 조회된 영업 중 점포 수:', result.length);
+    if (result.length > 0) {
+      console.log('[StoreService] 샘플 점포:', {
+        id: result[0].id,
+        sector: result[0].sector,
+        openDate: result[0].openDate,
+        closeDate: result[0].closeDate,
+      });
+    } else {
+      // 데이터가 없을 때 원인 파악을 위한 추가 쿼리
+      const totalCount = await this.storeRepository.count();
+      const sectorCount = sector
+        ? await this.storeRepository.count({ where: { sector } })
+        : 0;
+      const closedCount = sector
+        ? await this.storeRepository.count({
+            where: { sector, closeDate: Not(IsNull()) },
+          })
+        : await this.storeRepository.count({
+            where: { closeDate: Not(IsNull()) },
+          });
+      console.log('[StoreService] 디버깅 정보:', {
+        totalStores: totalCount,
+        sectorStores: sectorCount,
+        closedStores: closedCount,
+        openStores: sectorCount - closedCount,
+      });
+    }
+    return result;
   }
 
   /**
