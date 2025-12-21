@@ -155,4 +155,74 @@ export class AnalysisService {
       sector,
     };
   }
+
+  /**
+   * 분석 데이터 상태 확인용 디버깅 정보 조회
+   *
+   * @returns 각 분석 기능의 데이터 상태 정보
+   */
+  async getDebugInfo(): Promise<{
+    storeOpeningSnapshot: {
+      totalStores: number;
+      recentStores: number;
+      sectors: string[];
+    };
+    survivalAnalysis: {
+      totalClosedStores: number;
+      closedStoresBySector: Array<{ sector: string; count: number }>;
+      sectorsWithData: string[];
+    };
+    competitionAnalysis: {
+      storesWithLocation: number;
+      storesWithoutLocation: number;
+      sampleLocations: Array<{ lat: number; lng: number; sector: string }>;
+    };
+  }> {
+    // 1. 개업 현황 스냅샷 데이터 상태
+    const allStores = await this.storeService.findLatest(1000);
+    const recentStores = await this.storeService.findLatest(50);
+    const sectors = [
+      ...new Set(allStores.map((store) => store.sector).filter(Boolean)),
+    ] as string[];
+
+    // 2. 생존 기간 분석 데이터 상태
+    const allClosedStores = await this.storeService.findClosedStores();
+    const closedStoresBySector = new Map<string, number>();
+    for (const store of allClosedStores) {
+      if (store.sector) {
+        closedStoresBySector.set(
+          store.sector,
+          (closedStoresBySector.get(store.sector) ?? 0) + 1,
+        );
+      }
+    }
+    const closedStoresBySectorArray = Array.from(
+      closedStoresBySector.entries(),
+    ).map(([sector, count]) => ({ sector, count }));
+
+    // 3. 경쟁 강도 분석 데이터 상태 (공간 데이터)
+    const spatialDebugInfo = await this.spatialService.getDebugInfo();
+
+    return {
+      storeOpeningSnapshot: {
+        totalStores: allStores.length,
+        recentStores: recentStores.length,
+        sectors,
+      },
+      survivalAnalysis: {
+        totalClosedStores: allClosedStores.length,
+        closedStoresBySector: closedStoresBySectorArray,
+        sectorsWithData: closedStoresBySectorArray.map((item) => item.sector),
+      },
+      competitionAnalysis: {
+        storesWithLocation: spatialDebugInfo.storesWithLocation,
+        storesWithoutLocation: spatialDebugInfo.storesWithoutLocation,
+        sampleLocations: spatialDebugInfo.sampleLocations.map((loc) => ({
+          lat: loc.lat,
+          lng: loc.lng,
+          sector: loc.sector,
+        })),
+      },
+    };
+  }
 }

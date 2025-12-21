@@ -54,7 +54,19 @@ export class SpatialService {
       LIMIT 100;
     `;
 
+    // 디버깅을 위한 로깅
+    console.log('[SpatialService] 쿼리 파라미터:', {
+      lat,
+      lng,
+      radiusMeters,
+      sector,
+    });
+    console.log('[SpatialService] SQL 쿼리:', query);
+    console.log('[SpatialService] 파라미터 값:', params);
+
     const rows: unknown[] = await this.dataSource.query(query, params);
+
+    console.log('[SpatialService] 조회된 행 수:', rows.length);
 
     const toOptionalString = (value: unknown): string | null => {
       if (typeof value === 'string') {
@@ -132,5 +144,79 @@ export class SpatialService {
     }
 
     return 0;
+  }
+
+  /**
+   * 데이터베이스 상태 확인용 디버깅 정보 조회
+   *
+   * @returns location 데이터 통계 및 샘플 좌표
+   */
+  async getDebugInfo(): Promise<{
+    totalStores: number;
+    storesWithLocation: number;
+    storesWithoutLocation: number;
+    sampleLocations: Array<{
+      id: number;
+      storeName: string;
+      lat: number;
+      lng: number;
+      sector: string;
+    }>;
+  }> {
+    // 전체 점포 수
+    const totalQuery = `SELECT COUNT(*) as count FROM store`;
+    const totalResult = (await this.dataSource.query(
+      totalQuery,
+    )) as unknown as Array<{
+      count: string | number;
+    }>;
+    const totalStores = Number(totalResult[0]?.count ?? 0);
+
+    // location이 있는 점포 수
+    const withLocationQuery = `SELECT COUNT(*) as count FROM store WHERE location IS NOT NULL`;
+    const withLocationResult = (await this.dataSource.query(
+      withLocationQuery,
+    )) as unknown as Array<{ count: string | number }>;
+    const storesWithLocation = Number(withLocationResult[0]?.count ?? 0);
+
+    // location이 없는 점포 수
+    const storesWithoutLocation = totalStores - storesWithLocation;
+
+    // 샘플 좌표 조회 (최대 10개)
+    const sampleQuery = `
+      SELECT 
+        id,
+        "storeName",
+        "sector",
+        ST_Y(location::geometry) as lat,
+        ST_X(location::geometry) as lng
+      FROM store
+      WHERE location IS NOT NULL
+      LIMIT 10
+    `;
+    const sampleRows = (await this.dataSource.query(
+      sampleQuery,
+    )) as unknown as Array<{
+      id: string | number;
+      storeName: string | null;
+      sector: string | null;
+      lat: string | number;
+      lng: string | number;
+    }>;
+
+    const sampleLocations = sampleRows.map((row) => ({
+      id: Number(row.id),
+      storeName: row.storeName ?? '',
+      lat: Number(row.lat),
+      lng: Number(row.lng),
+      sector: row.sector ?? '',
+    }));
+
+    return {
+      totalStores,
+      storesWithLocation,
+      storesWithoutLocation,
+      sampleLocations,
+    };
   }
 }

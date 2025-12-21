@@ -23,10 +23,13 @@ export class StoreService {
    * @returns 최근 개업일 순으로 정렬된 점포 목록
    */
   async findLatest(limit = 50): Promise<StoreEntity[]> {
-    return this.storeRepository.find({
+    console.log('[StoreService] findLatest 호출:', { limit });
+    const result = await this.storeRepository.find({
       take: limit,
       order: { openDate: 'DESC' }, // 개업일 내림차순 (최신순)
     });
+    console.log('[StoreService] 조회된 점포 수:', result.length);
+    return result;
   }
 
   /**
@@ -36,10 +39,13 @@ export class StoreService {
    * @returns 해당 업종의 점포 목록 (개업일 내림차순)
    */
   async findAllBySector(sector: string): Promise<StoreEntity[]> {
-    return this.storeRepository.find({
+    console.log('[StoreService] findAllBySector 호출:', { sector });
+    const result = await this.storeRepository.find({
       where: { sector },
       order: { openDate: 'DESC' },
     });
+    console.log('[StoreService] 조회된 점포 수:', result.length);
+    return result;
   }
 
   /**
@@ -66,5 +72,51 @@ export class StoreService {
       where,
       order: { closeDate: 'DESC' }, // 폐업일 내림차순
     });
+  }
+
+  /**
+   * 데이터베이스 상태 확인용 디버깅 정보 조회
+   *
+   * @returns 점포 데이터 통계 및 업종 목록
+   */
+  async getDebugInfo(): Promise<{
+    totalStores: number;
+    sectors: Array<{ sector: string; count: number }>;
+    sampleStores: Array<{ id: number; storeName: string; sector: string }>;
+  }> {
+    // 전체 점포 수
+    const totalStores = await this.storeRepository.count();
+
+    // 업종별 점포 수
+    const sectorQuery = await this.storeRepository
+      .createQueryBuilder('store')
+      .select('store.sector', 'sector')
+      .addSelect('COUNT(*)', 'count')
+      .groupBy('store.sector')
+      .orderBy('count', 'DESC')
+      .getRawMany();
+
+    const sectors = (
+      sectorQuery as Array<{ sector: string; count: string }>
+    ).map((row) => ({
+      sector: row.sector,
+      count: Number(row.count),
+    }));
+
+    // 샘플 점포 조회 (최대 10개)
+    const sampleStores = await this.storeRepository.find({
+      take: 10,
+      select: ['id', 'storeName', 'sector'],
+    });
+
+    return {
+      totalStores,
+      sectors,
+      sampleStores: sampleStores.map((store) => ({
+        id: store.id,
+        storeName: store.storeName ?? '',
+        sector: store.sector,
+      })),
+    };
   }
 }

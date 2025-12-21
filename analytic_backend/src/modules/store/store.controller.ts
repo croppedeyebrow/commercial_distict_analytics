@@ -5,6 +5,7 @@ import {
   ParseIntPipe,
   DefaultValuePipe,
 } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { StoreService } from './store.service';
 
 /**
@@ -13,6 +14,7 @@ import { StoreService } from './store.service';
  * 클라이언트로부터 점포 조회 요청을 받아 StoreService를 호출합니다.
  * 엔드포인트: /stores
  */
+@ApiTags('stores')
 @Controller('stores')
 export class StoreController {
   constructor(private readonly storeService: StoreService) {}
@@ -58,5 +60,25 @@ export class StoreController {
   @Get('closed')
   async listClosed(@Query('sector') sector?: string) {
     return this.storeService.findClosedStores(sector);
+  }
+
+  /**
+   * 데이터베이스 상태 확인용 디버깅 엔드포인트
+   *
+   * GET /stores/debug
+   *
+   * 전체 점포 수, 업종별 점포 수, 샘플 점포를 확인할 수 있습니다.
+   */
+  @Get('debug')
+  @ApiOperation({
+    summary: '점포 데이터 디버깅 정보',
+    description: '데이터베이스에 저장된 점포 데이터의 상태를 확인합니다.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: '디버깅 정보',
+  })
+  async getDebugInfo() {
+    return this.storeService.getDebugInfo();
   }
 }

@@ -195,4 +195,73 @@ export class AnalysisController {
 
     return this.analysisService.getCompetition(lat, lon, radiusMeters, sector);
   }
+
+  /**
+   * 분석 데이터 상태 확인용 디버깅 엔드포인트
+   *
+   * GET /analysis/debug
+   *
+   * 각 분석 기능의 데이터 상태를 확인할 수 있습니다.
+   */
+  @Get('debug')
+  @ApiOperation({
+    summary: '분석 데이터 디버깅 정보',
+    description:
+      '개업 현황, 생존 기간 분석, 경쟁 강도 분석에 사용되는 데이터의 상태를 확인합니다.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: '디버깅 정보',
+    schema: {
+      type: 'object',
+      properties: {
+        storeOpeningSnapshot: {
+          type: 'object',
+          properties: {
+            totalStores: { type: 'number' },
+            recentStores: { type: 'number' },
+            sectors: { type: 'array', items: { type: 'string' } },
+          },
+        },
+        survivalAnalysis: {
+          type: 'object',
+          properties: {
+            totalClosedStores: { type: 'number' },
+            closedStoresBySector: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  sector: { type: 'string' },
+                  count: { type: 'number' },
+                },
+              },
+            },
+            sectorsWithData: { type: 'array', items: { type: 'string' } },
+          },
+        },
+        competitionAnalysis: {
+          type: 'object',
+          properties: {
+            storesWithLocation: { type: 'number' },
+            storesWithoutLocation: { type: 'number' },
+            sampleLocations: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  lat: { type: 'number' },
+                  lng: { type: 'number' },
+                  sector: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  })
+  async getDebugInfo() {
+    return this.analysisService.getDebugInfo();
+  }
 }
