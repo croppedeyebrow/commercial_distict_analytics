@@ -28,6 +28,8 @@ export class SpatialService {
     radiusMeters: number,
     sector?: string,
   ): Promise<StoreWithinRadiusRow[]> {
+    const startTime = Date.now();
+
     // 업종 필터 조건 추가
     const sectorCondition = sector ? `AND "sector" = $4` : '';
     const params: unknown[] = [lng, lat, radiusMeters];
@@ -54,43 +56,60 @@ export class SpatialService {
       LIMIT 100;
     `;
 
-    // 디버깅을 위한 로깅
-    console.log('[SpatialService] 쿼리 파라미터:', {
-      lat,
-      lng,
-      radiusMeters,
-      sector,
-    });
-    console.log('[SpatialService] SQL 쿼리:', query);
-    console.log('[SpatialService] 파라미터 값:', params);
+    try {
+      // 디버깅을 위한 로깅
+      console.log('[SpatialService] 쿼리 파라미터:', {
+        lat,
+        lng,
+        radiusMeters,
+        sector: sector || '(전체)',
+      });
 
-    const rows: unknown[] = await this.dataSource.query(query, params);
+      const rows: unknown[] = await this.dataSource.query(query, params);
 
-    console.log('[SpatialService] 조회된 행 수:', rows.length);
+      const executionTime = Date.now() - startTime;
+      console.log(
+        `[SpatialService] 조회 완료: ${rows.length}개 점포 (실행 시간: ${executionTime}ms)`,
+      );
 
-    const toOptionalString = (value: unknown): string | null => {
-      if (typeof value === 'string') {
-        return value;
+      // 데이터가 없을 때 로깅
+      if (rows.length === 0) {
+        console.log(
+          `[SpatialService] 경고: 반경 ${radiusMeters}m 내 점포가 없습니다. (좌표: ${lat}, ${lng}, 업종: ${sector || '전체'})`,
+        );
       }
-      if (typeof value === 'number') {
-        return value.toString();
-      }
-      return null;
-    };
 
-    return (Array.isArray(rows) ? rows : []).map((entry) => {
-      const row = entry as Record<string, unknown>;
-      return {
-        id: toOptionalString(row.id ?? row['ID']) ?? '',
-        storeName: toOptionalString(row.storeName ?? row['store_name']) ?? '',
-        sector: toOptionalString(row.sector),
-        address: toOptionalString(row.address),
-        location:
-          toOptionalString(
-            row.location ?? row['st_asgeojson'] ?? row['location_geojson'],
-          ) ?? '',
+      const toOptionalString = (value: unknown): string | null => {
+        if (typeof value === 'string') {
+          return value;
+        }
+        if (typeof value === 'number') {
+          return value.toString();
+        }
+        return null;
       };
-    });
+
+      return (Array.isArray(rows) ? rows : []).map((entry) => {
+        const row = entry as Record<string, unknown>;
+        return {
+          id: toOptionalString(row.id ?? row['ID']) ?? '',
+          storeName: toOptionalString(row.storeName ?? row['store_name']) ?? '',
+          sector: toOptionalString(row.sector),
+          address: toOptionalString(row.address),
+          location:
+            toOptionalString(
+              row.location ?? row['st_asgeojson'] ?? row['location_geojson'],
+            ) ?? '',
+        };
+      });
+    } catch (error) {
+      const executionTime = Date.now() - startTime;
+      console.error(
+        `[SpatialService] 쿼리 실행 실패 (실행 시간: ${executionTime}ms):`,
+        error,
+      );
+      throw error;
+    }
   }
 
   /**

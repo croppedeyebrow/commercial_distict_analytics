@@ -1,4 +1,10 @@
-import { Controller, Get, Query, ParseFloatPipe } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Query,
+  ParseFloatPipe,
+  BadRequestException,
+} from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiQuery, ApiResponse } from '@nestjs/swagger';
 import { SpatialService, StoreWithinRadiusRow } from './spatial.service';
 
@@ -34,8 +40,21 @@ export class SpatialController {
   @Get('stores-within-radius')
   @ApiOperation({
     summary: '반경 내 점포 목록 조회',
-    description:
-      '특정 좌표를 중심으로 지정된 반경(미터) 내에 있는 점포 목록을 조회합니다. PostGIS를 사용하여 공간 인덱스를 활용한 고성능 쿼리를 수행합니다.',
+    description: `특정 좌표를 중심으로 지정된 반경(미터) 내에 있는 점포 목록을 조회합니다. PostGIS를 사용하여 공간 인덱스를 활용한 고성능 쿼리를 수행합니다.
+
+**서울 주요 지역 좌표 (테스트용)**:
+- 명동: lat=37.5636, lng=126.9826
+- 강남역: lat=37.4980, lng=127.0276
+- 홍대입구: lat=37.5563, lng=126.9236
+- 이태원: lat=37.5345, lng=126.9949
+- 종로3가: lat=37.5704, lng=126.9918
+- 잠실: lat=37.5133, lng=127.1028
+
+**권장 반경**:
+- 100m: 매우 좁은 범위 (건물 단위)
+- 500m: 도보 5분 거리
+- 1000m: 도보 10분 거리
+- 2000m: 넓은 상권 분석`,
   })
   @ApiQuery({
     name: 'lat',
@@ -87,7 +106,24 @@ export class SpatialController {
   })
   @ApiResponse({
     status: 400,
-    description: '잘못된 파라미터 (좌표 범위 초과, 반경 범위 초과 등)',
+    description: '잘못된 파라미터',
+    schema: {
+      type: 'object',
+      properties: {
+        statusCode: { type: 'number', example: 400 },
+        message: {
+          type: 'string',
+          examples: [
+            '위도는 -90 ~ 90 범위여야 합니다. 입력된 값: 100',
+            '경도는 -180 ~ 180 범위여야 합니다. 입력된 값: 200',
+            '반경은 최소 1미터 이상이어야 합니다. 입력된 값: 0',
+            '반경은 최대 10,000미터(10km) 이하여야 합니다. 입력된 값: 20000',
+            '업종 코드는 빈 문자열일 수 없습니다.',
+          ],
+        },
+        error: { type: 'string', example: 'Bad Request' },
+      },
+    },
   })
   async getStoresWithinRadius(
     @Query('lat', ParseFloatPipe) lat: number,
@@ -95,6 +131,37 @@ export class SpatialController {
     @Query('radius', ParseFloatPipe) radius: number,
     @Query('sector') sector?: string,
   ): Promise<StoreWithinRadiusRow[]> {
+    // 좌표 범위 검증
+    if (lat < -90 || lat > 90) {
+      throw new BadRequestException(
+        `위도는 -90 ~ 90 범위여야 합니다. 입력된 값: ${lat}`,
+      );
+    }
+
+    if (lng < -180 || lng > 180) {
+      throw new BadRequestException(
+        `경도는 -180 ~ 180 범위여야 합니다. 입력된 값: ${lng}`,
+      );
+    }
+
+    // 반경 범위 검증
+    if (radius < 1) {
+      throw new BadRequestException(
+        `반경은 최소 1미터 이상이어야 합니다. 입력된 값: ${radius}`,
+      );
+    }
+
+    if (radius > 10000) {
+      throw new BadRequestException(
+        `반경은 최대 10,000미터(10km) 이하여야 합니다. 입력된 값: ${radius}`,
+      );
+    }
+
+    // 업종 코드 검증 (선택값이지만 빈 문자열은 제외)
+    if (sector !== undefined && sector.trim() === '') {
+      throw new BadRequestException('업종 코드는 빈 문자열일 수 없습니다.');
+    }
+
     return this.spatialService.findStoresWithinRadius(lat, lng, radius, sector);
   }
 
