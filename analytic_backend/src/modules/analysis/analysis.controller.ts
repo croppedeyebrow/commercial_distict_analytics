@@ -336,4 +336,125 @@ export class AnalysisController {
   async getDebugInfo() {
     return this.analysisService.getDebugInfo();
   }
+
+  /**
+   * 지역별 생존가능성 지표 조회
+   *
+   * GET /analysis/survival-score
+   *
+   * 특정 위치 주변의 점포 생존 패턴을 분석하여 해당 지역의 생존가능성을 평가합니다.
+   */
+  @Get('survival-score')
+  @ApiOperation({
+    summary: '지역별 생존가능성 지표',
+    description:
+      '특정 위치 주변의 점포 생존 패턴을 분석하여 해당 지역의 생존가능성을 0-100 점수로 평가합니다.',
+  })
+  @ApiQuery({
+    name: 'lat',
+    required: true,
+    type: Number,
+    description: '위도 (-90 ~ 90)',
+    example: 37.5636,
+  })
+  @ApiQuery({
+    name: 'lng',
+    required: true,
+    type: Number,
+    description: '경도 (-180 ~ 180)',
+    example: 126.9826,
+  })
+  @ApiQuery({
+    name: 'radius',
+    required: false,
+    type: Number,
+    description: '반경 (미터, 기본값: 500)',
+    example: 500,
+  })
+  @ApiQuery({
+    name: 'sector',
+    required: false,
+    type: String,
+    description: '업종 코드 (선택값)',
+    example: '일반음식점',
+  })
+  @ApiResponse({
+    status: 200,
+    description: '생존가능성 지표',
+  })
+  async getSurvivalScore(
+    @Query('lat', ParseFloatPipe) lat: number,
+    @Query('lng', ParseFloatPipe) lng: number,
+    @Query('radius', ParseFloatPipe) radius?: number,
+    @Query('sector') sector?: string,
+  ) {
+    return this.analysisService.calculateLocationSurvivalScore(
+      lat,
+      lng,
+      radius || 500,
+      sector,
+    );
+  }
+
+  /**
+   * 좋은 자리 체크하기
+   *
+   * GET /analysis/good-location
+   *
+   * 특정 위치의 상권 적합성을 종합적으로 평가합니다.
+   */
+  @Get('good-location')
+  @ApiOperation({
+    summary: '좋은 자리 체크하기',
+    description:
+      '특정 위치의 상권 적합성을 종합적으로 평가하여 점수, 위험 요소, 기회 요소를 제공합니다.',
+  })
+  @ApiQuery({
+    name: 'lat',
+    required: true,
+    type: Number,
+    description: '위도 (-90 ~ 90)',
+    example: 37.5636,
+  })
+  @ApiQuery({
+    name: 'lng',
+    required: true,
+    type: Number,
+    description: '경도 (-180 ~ 180)',
+    example: 126.9826,
+  })
+  @ApiQuery({
+    name: 'sector',
+    required: true,
+    type: String,
+    description: '업종 코드 (필수값)',
+    example: '일반음식점',
+  })
+  @ApiQuery({
+    name: 'radius',
+    required: false,
+    type: Number,
+    description: '반경 (미터, 기본값: 500)',
+    example: 500,
+  })
+  @ApiResponse({
+    status: 200,
+    description: '종합 평가 결과',
+  })
+  async checkGoodLocation(
+    @Query('lat', ParseFloatPipe) lat: number,
+    @Query('lng', ParseFloatPipe) lng: number,
+    @Query('sector') sector: string,
+    @Query('radius', ParseFloatPipe) radius?: number,
+  ) {
+    if (!sector || sector.trim() === '') {
+      throw new BadRequestException('업종 코드는 필수입니다.');
+    }
+    return this.analysisService.checkGoodLocation(
+      lat,
+      lng,
+      sector,
+      radius || 500,
+    );
+  }
 }
